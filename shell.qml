@@ -52,7 +52,7 @@ ShellRoot {
 
   function handle(req) {
     var op = req.op
-    if (op === "ping") return { ok: true, version: "0.1.0" }
+    if (op === "ping") return { ok: true, version: "0.1.1" }
     if (op === "open") {
       if (!req.path) return { ok: false, error: "path is required" }
       var id = open(req.path, req.workspace || "")

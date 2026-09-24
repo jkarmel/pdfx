@@ -5,6 +5,8 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 include(GNUInstallDirs)
+# Installed libraries live on the default loader path; no RUNPATH needed.
+set(CMAKE_SKIP_INSTALL_RPATH ON)
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Qml Quick)
 find_package(PkgConfig REQUIRED)

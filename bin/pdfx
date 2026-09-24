@@ -47,8 +47,10 @@ def ensure_running() -> None:
     env = dict(os.environ)
     if (IMPORT_PATH / "Pdfx" / "libpdfxplugin.so").exists():
         env["QML_IMPORT_PATH"] = str(IMPORT_PATH) + (":" + env["QML_IMPORT_PATH"] if env.get("QML_IMPORT_PATH") else "")
-    elif not (SYSTEM_MODULE / "libpdfxplugin.so").exists():
-        sys.exit(f"pdfx: the Poppler module is not built. Run: {ROOT}/bin/build (or install the pdfx package)")
+    else:
+        candidates = [SYSTEM_MODULE] + [Path(d) / "Pdfx" for d in env.get("QML_IMPORT_PATH", "").split(":") if d]
+        if not any((c / "libpdfxplugin.so").exists() for c in candidates):
+            sys.exit(f"pdfx: the Poppler module is not built. Run: {ROOT}/bin/build (or install the pdfx package)")
     env.setdefault("QT_QPA_PLATFORM", "wayland")
     # Never let the app inherit a stale placement token from the caller.
     for key in ("HL_INITIAL_WORKSPACE_TOKEN", "HL_EXEC_RULE_TOKEN"):

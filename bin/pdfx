@@ -1,0 +1,218 @@
+#!/usr/bin/env python3
+"""PDFX command line: open, fill, sign, and save PDFs in the PDFX windows.
+
+Every command prints JSON so agents can parse it. The app starts on demand.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+SHELL = ROOT / "shell.qml"
+IMPORT_PATH = ROOT / "build" / "qml"          # source checkout
+SYSTEM_MODULE = Path("/usr/lib/qt6/qml/Pdfx")  # package install
+
+
+def ipc(payload: dict, timeout: float = 20.0) -> dict:
+    result = subprocess.run(
+        ["quickshell", "ipc", "-p", str(SHELL), "call", "pdfx", "request", json.dumps(payload)],
+        capture_output=True, text=True, timeout=timeout,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "ipc call failed")
+    text = result.stdout.strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        raise RuntimeError(f"unexpected reply: {text}")
+
+
+def running() -> bool:
+    try:
+        return ipc({"op": "ping"}, timeout=5).get("ok") is True
+    except (RuntimeError, subprocess.TimeoutExpired):
+        return False
+
+
+def ensure_running() -> None:
+    if running():
+        return
+    env = dict(os.environ)
+    if (IMPORT_PATH / "Pdfx" / "libpdfxplugin.so").exists():
+        env["QML_IMPORT_PATH"] = str(IMPORT_PATH) + (":" + env["QML_IMPORT_PATH"] if env.get("QML_IMPORT_PATH") else "")
+    elif not (SYSTEM_MODULE / "libpdfxplugin.so").exists():
+        sys.exit(f"pdfx: the Poppler module is not built. Run: {ROOT}/bin/build (or install the pdfx package)")
+    env.setdefault("QT_QPA_PLATFORM", "wayland")
+    # Never let the app inherit a stale placement token from the caller.
+    for key in ("HL_INITIAL_WORKSPACE_TOKEN", "HL_EXEC_RULE_TOKEN"):
+        env.pop(key, None)
+    log = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "pdfx"
+    log.mkdir(parents=True, exist_ok=True)
+    with open(log / "pdfx.log", "ab") as out:
+        subprocess.Popen(["quickshell", "--no-duplicate", "-p", str(SHELL)], env=env, stdout=out, stderr=out,
+                         stdin=subprocess.DEVNULL, start_new_session=True, cwd=str(ROOT))
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        if running():
+            return
+        time.sleep(0.2)
+    sys.exit(f"pdfx: the app did not start; see {log / 'pdfx.log'}")
+
+
+def resolve_workspace(explicit: str | None) -> str:
+    if explicit:
+        return explicit
+    inherited = os.environ.get("OMARCHY_REQUEST_WORKSPACE")
+    if inherited:
+        return inherited
+    helper = shutil.which("omarchy-launch-here") or str(Path.home() / ".local/bin/omarchy-launch-here")
+    if os.path.exists(helper):
+        result = subprocess.run([helper, "--print-workspace"], capture_output=True, text=True)
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    return ""
+
+
+def emit(reply: dict) -> int:
+    print(json.dumps(reply, indent=2))
+    return 0 if reply.get("ok") else 1
+
+
+def parse_fields(pairs: list[str], json_text: str | None, json_file: str | None) -> dict:
+    fields: dict = {}
+    if json_file:
+        fields.update(json.loads(Path(json_file).read_text()))
+    if json_text:
+        fields.update(json.loads(json_text))
+    for pair in pairs:
+        if "=" not in pair:
+            sys.exit(f"pdfx: expected NAME=VALUE, got {pair!r}")
+        name, value = pair.split("=", 1)
+        fields[name] = value
+    return fields
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="pdfx", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("open", help="open a PDF in a new window on the requesting workspace")
+    p.add_argument("path")
+    p.add_argument("--workspace", help="Hyprland workspace name or number (default: the requesting terminal's)")
+    p.add_argument("--here", action="store_true", help="do not move the window; leave it where Hyprland puts it")
+
+    sub.add_parser("windows", help="list open windows")
+    sub.add_parser("ping", help="check that the app is running")
+
+    for name, help_text in (("info", "window details"), ("fields", "list form fields with page-relative rectangles"),
+                            ("pages", "page sizes in points"), ("undo", "remove the last placed signature or text"),
+                            ("focus", "show the window"), ("close", "close the window")):
+        p = sub.add_parser(name, help=help_text)
+        p.add_argument("window", nargs="?", default="last", help="window id (w1), 'last', or part of the file name")
+
+    p = sub.add_parser("fill", help="set form field values; the user sees each field update live")
+    p.add_argument("window", nargs="?", default="last")
+    p.add_argument("pairs", nargs="*", metavar="NAME=VALUE")
+    p.add_argument("--json", dest="json_text", help='{"field": "value", ...}')
+    p.add_argument("--file", dest="json_file", help="JSON file of field values")
+
+    p = sub.add_parser("sign", help="place a saved signature image")
+    p.add_argument("window", nargs="?", default="last")
+    p.add_argument("--page", type=int, default=1, help="1-based page number")
+    p.add_argument("--x", type=float, required=True, help="left edge, 0..1 of page width")
+    p.add_argument("--y", type=float, required=True, help="top edge, 0..1 of page height")
+    p.add_argument("--width", type=float, default=0.28, help="signature width, 0..1 of page width")
+    p.add_argument("--signature", help="saved signature name (see `pdfx signatures`)")
+    p.add_argument("--image", help="PNG path to use instead of a saved signature")
+
+    p = sub.add_parser("text", help="type text onto a page (for letters without form fields)")
+    p.add_argument("window", nargs="?", default="last")
+    p.add_argument("text")
+    p.add_argument("--page", type=int, default=1)
+    p.add_argument("--x", type=float, required=True)
+    p.add_argument("--y", type=float, required=True)
+    p.add_argument("--width", type=float, default=0, help="box width 0..1 (default: fits the text)")
+    p.add_argument("--size", type=float, default=11, help="font size in points")
+
+    p = sub.add_parser("save", help="save in place, or to a new path")
+    p.add_argument("window", nargs="?", default="last")
+    p.add_argument("--to", dest="path", help="write here instead of overwriting the original")
+
+    p = sub.add_parser("screenshot", help="capture the window contents to a PNG")
+    p.add_argument("window", nargs="?", default="last")
+    p.add_argument("path")
+
+    sub.add_parser("signatures", help="list saved signatures")
+    p = sub.add_parser("signature-create", help="create a typed signature from a name")
+    p.add_argument("text", help="the name as it should be signed")
+    p.add_argument("--name", help="label to save it under (default: the text)")
+    p.add_argument("--font", default="homemade", choices=["homemade", "aurore", "muellerhoff"], help="homemade (default), aurore, muellerhoff")
+    p = sub.add_parser("signature-import", help="save a PNG as a signature")
+    p.add_argument("path")
+    p.add_argument("--name", default="imported")
+
+    p = sub.add_parser("raw", help="send a raw JSON request")
+    p.add_argument("json_text")
+
+    args = parser.parse_args(argv)
+
+    if args.command == "ping":
+        return emit({"ok": running()})
+
+    ensure_running()
+
+    if args.command == "open":
+        path = str(Path(args.path).expanduser().resolve())
+        if not os.path.exists(path):
+            sys.exit(f"pdfx: no such file: {path}")
+        workspace = "" if args.here else resolve_workspace(args.workspace)
+        return emit(ipc({"op": "open", "path": path, "workspace": workspace}))
+    if args.command in ("windows", "signatures"):
+        return emit(ipc({"op": args.command}))
+    if args.command in ("info", "fields", "pages", "undo", "focus", "close"):
+        return emit(ipc({"op": args.command, "window": args.window}))
+    if args.command == "fill":
+        fields = parse_fields(args.pairs, args.json_text, args.json_file)
+        if not fields:
+            sys.exit("pdfx: nothing to fill; pass NAME=VALUE pairs, --json, or --file")
+        return emit(ipc({"op": "fill", "window": args.window, "fields": fields}))
+    if args.command == "sign":
+        req = {"op": "sign", "window": args.window, "page": args.page - 1, "x": args.x, "y": args.y, "width": args.width}
+        if args.signature:
+            req["signature"] = args.signature
+        if args.image:
+            req["image"] = str(Path(args.image).expanduser().resolve())
+        return emit(ipc(req))
+    if args.command == "text":
+        return emit(ipc({"op": "text", "window": args.window, "page": args.page - 1, "x": args.x, "y": args.y,
+                         "width": args.width, "text": args.text, "size": args.size}))
+    if args.command == "save":
+        req = {"op": "save", "window": args.window}
+        if args.path:
+            req["path"] = str(Path(args.path).expanduser().resolve())
+        return emit(ipc(req))
+    if args.command == "screenshot":
+        return emit(ipc({"op": "screenshot", "window": args.window, "path": str(Path(args.path).expanduser().resolve())}))
+    if args.command == "signature-create":
+        return emit(ipc({"op": "signature-create", "text": args.text, "name": args.name or args.text, "font": args.font}))
+    if args.command == "signature-import":
+        return emit(ipc({"op": "signature-import", "path": str(Path(args.path).expanduser().resolve()), "name": args.name}))
+    if args.command == "raw":
+        return emit(ipc(json.loads(args.json_text)))
+    return 2
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except RuntimeError as error:
+        sys.exit(f"pdfx: {error}")
+    except BrokenPipeError:
+        sys.exit(0)

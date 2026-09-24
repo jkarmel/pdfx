@@ -1,0 +1,9 @@
+singleton Theme 1.0 Theme.qml
+singleton Signatures 1.0 Signatures.qml
+PdfxWindow 1.0 PdfxWindow.qml
+PageView 1.0 PageView.qml
+FieldsPanel 1.0 FieldsPanel.qml
+SignaturePicker 1.0 SignaturePicker.qml
+ToolButton 1.0 ToolButton.qml
+Thumbnails 1.0 Thumbnails.qml
+SaveDialog 1.0 SaveDialog.qml

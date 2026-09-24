@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=PDFX
+GenericName=PDF Signer
+Comment=Sign and fill PDFs natively on Omarchy
+Exec=pdfx open %f
+Icon=application-pdf
+Terminal=false
+Categories=Office;Viewer;
+MimeType=application/pdf;
+StartupNotify=false
+Keywords=pdf;sign;signature;form;fill;

@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Build the Poppler QML module. Re-run after Qt or Poppler updates.
+set -euo pipefail
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+cmake -S "$ROOT" -B "$ROOT/build" -DCMAKE_BUILD_TYPE=Release -G Ninja -Wno-dev >/dev/null
+cmake --build "$ROOT/build"
+echo "built: $ROOT/build/qml/Pdfx"

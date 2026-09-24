@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Link the CLI into ~/.local/bin and register the desktop entry.
+set -euo pipefail
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+mkdir -p "$HOME/.local/bin" "$HOME/.local/share/applications"
+ln -sfn "$ROOT/bin/pdfx" "$HOME/.local/bin/pdfx"
+sed "s|^Exec=pdfx |Exec=$ROOT/bin/pdfx |" "$ROOT/pdfx.desktop" > "$HOME/.local/share/applications/pdfx.desktop"
+update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
+echo "installed: ~/.local/bin/pdfx and pdfx.desktop"
+echo "to make PDFX the default PDF app: xdg-mime default pdfx.desktop application/pdf"

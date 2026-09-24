@@ -1,0 +1,49 @@
+#!/usr/bin/env python3
+"""Move a freshly mapped window (matched by exact title) to a Hyprland workspace, silently.
+
+Uses Hyprland's Lua dispatch API (Omarchy 4): hl.dsp.window.move with follow = false, so the
+user's focus and current workspace never change.
+"""
+import json, subprocess, sys, time
+
+
+def lua_string(value: str) -> str:
+    return json.dumps(value)
+
+
+def main():
+    if len(sys.argv) != 3:
+        print("usage: pdfx-place TITLE WORKSPACE", file=sys.stderr); return 2
+    title, workspace = sys.argv[1], sys.argv[2]
+    if workspace.isdigit():
+        selector = workspace
+    elif workspace.startswith(("name:", "special:")):
+        selector = lua_string(workspace)
+    else:
+        selector = lua_string(f"name:{workspace}")
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        try:
+            clients = json.loads(subprocess.run(["hyprctl", "clients", "-j"], capture_output=True, text=True, timeout=3).stdout or "[]")
+        except (subprocess.SubprocessError, json.JSONDecodeError):
+            clients = []
+        match = [c for c in clients if c.get("title") == title]
+        if match:
+            client = match[0]
+            current = str(client.get("workspace", {}).get("name", ""))
+            if current == workspace or current == workspace.removeprefix("name:"):
+                return 0
+            command = (f"hl.dsp.window.move({{ workspace = {selector}, follow = false, "
+                       f"window = {lua_string('address:' + str(client.get('address')))} }})")
+            result = subprocess.run(["hyprctl", "dispatch", command], capture_output=True, text=True, timeout=3)
+            if result.returncode != 0 or "error" in result.stdout.lower():
+                print(f"pdfx-place: {result.stdout.strip()} {result.stderr.strip()}", file=sys.stderr)
+                return 1
+            return 0
+        time.sleep(0.05)
+    print(f"pdfx-place: window '{title}' never appeared", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
